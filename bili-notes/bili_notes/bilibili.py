@@ -43,6 +43,13 @@ class Segment:
 
 
 @dataclass
+class FavItem:
+    bvid: str
+    title: str
+    added_at: int  # 收藏 / 加入稍后再看的时间戳
+
+
+@dataclass
 class VideoRef:
     bvid: str | None = None
     aid: int | None = None
@@ -62,6 +69,7 @@ class VideoInfo:
     desc: str
     tags: list[str] = field(default_factory=list)
     upower_exclusive: bool = False
+    page_count: int = 1
 
     @property
     def url(self) -> str:
@@ -69,15 +77,11 @@ class VideoInfo:
             f"?p={self.page}" if self.page > 1 else ""
         )
 
-    def url_at(self, seconds: int) -> str:
-        sep = "&" if "?" in self.url else "?"
-        return f"{self.url}{sep}t={seconds}"
-
 
 def parse_ref(text: str, client: httpx.Client | None = None) -> VideoRef:
     """接受 BV 号 / av 号 / 完整链接 / b23.tv 短链。"""
     text = text.strip()
-    if "b23.tv" in text:
+    if "b23.tv" in text or "bili2233.cn" in text:
         if client is None:
             raise BiliError("解析 b23.tv 短链需要网络客户端")
         url = text if text.startswith("http") else "https://" + text
@@ -135,6 +139,7 @@ class BiliClient:
                 self.http.cookies.set(k, v, domain=".bilibili.com")
         self._wbi_key: str | None = None
         self.logged_in = False
+        self.mid: int | None = None
         self._ensure_buvid()
 
     def close(self) -> None:
@@ -172,6 +177,7 @@ class BiliClient:
         if self._wbi_key is None:
             nav = self._get_json("https://api.bilibili.com/x/web-interface/nav")
             self.logged_in = bool(nav.get("isLogin"))
+            self.mid = nav.get("mid") if self.logged_in else None
             stem = lambda u: u.rsplit("/", 1)[-1].split(".")[0]  # noqa: E731
             img = nav["wbi_img"]
             self._wbi_key = mixin_key(stem(img["img_url"]), stem(img["sub_url"]))
@@ -210,6 +216,7 @@ class BiliClient:
             desc=data.get("desc", ""),
             tags=tags,
             upower_exclusive=bool(data.get("is_upower_exclusive")),
+            page_count=max(len(pages), 1),
         )
 
     # ---- 字幕 -------------------------------------------------------------
@@ -274,11 +281,59 @@ class BiliClient:
                 tmp.unlink(missing_ok=True)
         raise BiliError(f"音频下载失败：{last_err}")
 
-    # ---- 稍后再看 ----------------------------------------------------------
+    # ---- 收藏夹与稍后再看 --------------------------------------------------
 
-    def watch_later(self) -> list[str]:
+    def my_folders(self) -> list[dict]:
+        """当前登录账号创建的收藏夹：[{id, title, media_count}]"""
+        self._get_wbi_key()  # 顺便拿到登录状态和 mid
+        if not self.mid:
+            raise BiliError("读取自己的收藏夹列表需要登录，请检查 BILI_COOKIE 是否有效")
+        data = self._get_json(
+            "https://api.bilibili.com/x/v3/fav/folder/created/list-all", {"up_mid": self.mid}
+        )
+        return (data or {}).get("list") or []
+
+    def resolve_folder(self, spec: str) -> int:
+        """收藏夹可以写 media_id、收藏夹链接（含 fid=）或收藏夹名称。"""
+        spec = spec.strip()
+        if m := re.search(r"[?&]fid=(\d+)", spec):
+            return int(m.group(1))
+        if spec.isdigit():
+            return int(spec)
+        for folder in self.my_folders():
+            if folder["title"] == spec:
+                return int(folder["id"])
+        raise BiliError(f"找不到名为「{spec}」的收藏夹")
+
+    def folder_items(self, media_id: int, since: int = 0, limit: int = 200) -> list[FavItem]:
+        """按收藏时间从新到旧，取 since 之后收藏的视频。"""
+        items: list[FavItem] = []
+        for pn in range(1, 100):
+            data = self._get_json(
+                "https://api.bilibili.com/x/v3/fav/resource/list",
+                {"media_id": media_id, "pn": pn, "ps": 20, "order": "mtime", "platform": "web"},
+            )
+            medias = (data or {}).get("medias") or []
+            for m in medias:
+                if m.get("fav_time", 0) <= since:
+                    return items
+                # type 2 是普通视频；失效视频标题为「已失效视频」
+                if m.get("type") == 2 and m.get("bvid") and m.get("title") != "已失效视频":
+                    items.append(FavItem(m["bvid"], m["title"], m["fav_time"]))
+                    if len(items) >= limit:
+                        return items
+            if not (data or {}).get("has_more"):
+                break
+        return items
+
+    def watch_later(self, since: int = 0) -> list[FavItem]:
         data = self._get_json("https://api.bilibili.com/x/v2/history/toview")
-        return [item["bvid"] for item in (data or {}).get("list") or []]
+        items = [
+            FavItem(i["bvid"], i.get("title", ""), i.get("add_at", 0))
+            for i in (data or {}).get("list") or []
+            if i.get("bvid") and i.get("add_at", 0) > since
+        ]
+        return sorted(items, key=lambda i: i.added_at, reverse=True)
 
 
 def pick_subtitle(subs: list[dict]) -> dict:

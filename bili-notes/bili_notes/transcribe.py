@@ -9,7 +9,7 @@ from .bilibili import Segment
 
 def transcribe(
     audio: Path,
-    model_size: str = "large-v3-turbo",
+    model_size: str = "small",
     hint: str = "",
     log=print,
 ) -> list[Segment]:
@@ -21,7 +21,8 @@ def transcribe(
         ) from e
 
     log(f"加载 Whisper 模型 {model_size}（首次运行会自动下载）…")
-    model = WhisperModel(model_size, device="auto", compute_type="default")
+    # auto：有 NVIDIA 显卡用显卡，否则在 CPU 上用 int8，内存占用和速度都更友好
+    model = WhisperModel(model_size, device="auto", compute_type="auto")
     # initial_prompt 能让输出偏向简体中文，并帮助识别标题里的专有名词
     prompt = "以下是普通话的讲解，使用简体中文和标点符号。" + (f"主题：{hint}" if hint else "")
     segments, info = model.transcribe(

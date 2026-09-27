@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block content %}
+{% if msg %}<p class="flash">{{ msg }}</p>{% endif %}
+
+<form class="add" method="post" action="/add">
+  <input name="link" placeholder="粘贴 B 站分享内容、链接或 BV 号" required>
+  <button class="primary">整理</button>
+</form>
+
+<section class="status">
+  <div>
+    <b>{{ counts.get('done', 0) }}</b> 篇笔记
+    {% if counts.get('pending', 0) or counts.get('processing', 0) %} · 队列 <b>{{ counts.get('pending', 0) + counts.get('processing', 0) }}</b>{% endif %}
+    {% if counts.get('failed', 0) %} · <span class="err">失败 {{ counts.get('failed', 0) }}</span>{% endif %}
+  </div>
+  {% if service.current %}<div class="muted">正在处理：{{ service.current }}</div>{% endif %}
+  {% if sync_enabled %}
+  <div class="muted">
+    上次同步：{{ last_sync[5:16].replace('T', ' ') if last_sync else '尚未同步' }}
+    <form class="inline" method="post" action="/sync"><button class="link">立即同步</button></form>
+  </div>
+  {% if sync_error %}<div class="err">同步出错：{{ sync_error }}</div>{% endif %}
+  {% else %}
+  <div class="muted">未配置收藏夹同步（BILI_FAV_FOLDER）</div>
+  {% endif %}
+  <div class="muted">模型：{{ llm.provider }}/{{ llm.model }} · 推送：{{ channels|join('、') if channels else '未配置' }}</div>
+</section>
+
+<ul class="list">
+{% for v in videos %}
+  <li>
+    <a href="/v/{{ v.id }}">
+      <span class="title">{{ v.display_title }}</span>
+      <span class="meta">
+        {% if v.status != 'done' %}<span class="badge {{ v.status }}">{{ status_label[v.status] }}</span>{% endif %}
+        {{ v.owner }}{% if v.duration %} · {{ v.duration|ts }}{% endif %}{% if v.done_at %} · {{ v.done_at[5:10] }}{% endif %}
+      </span>
+    </a>
+  </li>
+{% else %}
+  <li class="empty">还没有笔记。在 B 站收藏一个视频到同步的收藏夹，或在上面粘贴链接。</li>
+{% endfor %}
+</ul>
+<nav class="pager">
+  {% if page_no > 1 %}<a href="/?page_no={{ page_no - 1 }}">← 上一页</a>{% endif %}
+  {% if has_more %}<a href="/?page_no={{ page_no + 1 }}">下一页 →</a>{% endif %}
+</nav>
+
+<details class="logs"><summary>运行日志</summary><pre>{{ service.logs[-40:]|reverse|join('\n') }}</pre></details>
+{% endblock %}

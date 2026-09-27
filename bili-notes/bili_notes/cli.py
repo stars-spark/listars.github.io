@@ -1,94 +1,90 @@
 """命令行入口：
 
-    bili-notes BV1xx411c7mD https://www.bilibili.com/video/BV...?p=2
-    bili-notes --watchlater          # 处理「稍后再看」列表
-    bili-notes serve                 # 启动本地网页服务
+    bili-notes serve                 # 启动网页 + 后台同步（部署到服务器用这个）
+    bili-notes add BV1xx411c7mD ...  # 立即整理指定视频
+    bili-notes sync                  # 同步一次收藏夹并处理完队列
+    bili-notes folders               # 列出自己的收藏夹，方便填 BILI_FAV_FOLDER
+    bili-notes search 张居正          # 在知识库里搜索
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import sys
-from pathlib import Path
 
-from .bilibili import BiliClient
-from .pipeline import Config, process
-from .summarize import DEFAULT_MODEL
-
-
-def load_dotenv(path: Path = Path(".env")) -> None:
-    if not path.exists():
-        return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            os.environ.setdefault(k.strip(), v.strip().strip("'\""))
-
-
-def config_from_env(**overrides) -> Config:
-    cfg = Config(
-        out_dir=Path(os.environ.get("BILI_NOTES_DIR", "notes")),
-        cookie=os.environ.get("BILI_COOKIE") or None,
-        model=os.environ.get("BILI_NOTES_MODEL", DEFAULT_MODEL),
-        effort=os.environ.get("BILI_NOTES_EFFORT", "high"),
-        whisper_model=os.environ.get("BILI_NOTES_WHISPER", "large-v3-turbo"),
-    )
-    for k, v in overrides.items():
-        if v is not None:
-            setattr(cfg, k, v)
-    return cfg
+from .config import LLMConfig, Settings, load_dotenv
 
 
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
-    argv = sys.argv[1:] if argv is None else argv
+    p = argparse.ArgumentParser(prog="bili-notes", description="把 B 站视频整理成个人知识库")
+    sub = p.add_subparsers(dest="cmd", required=True)
 
-    if argv[:1] == ["serve"]:
-        p = argparse.ArgumentParser(prog="bili-notes serve")
-        p.add_argument("--host", default="127.0.0.1")
-        p.add_argument("--port", type=int, default=8765)
-        a = p.parse_args(argv[1:])
+    s = sub.add_parser("serve", help="启动网页和后台同步")
+    s.add_argument("--host", default="127.0.0.1")
+    s.add_argument("--port", type=int, default=8765)
+
+    a = sub.add_parser("add", help="立即整理指定视频")
+    a.add_argument("videos", nargs="+", help="BV 号、链接、b23.tv 短链或 B 站分享文字")
+
+    sub.add_parser("sync", help="同步一次收藏夹，并处理完队列")
+    sub.add_parser("folders", help="列出自己的收藏夹")
+
+    q = sub.add_parser("search", help="搜索知识库")
+    q.add_argument("query", nargs="+")
+
+    args = p.parse_args(argv)
+
+    if args.cmd == "serve":
         from .web import run
 
-        run(a.host, a.port)
+        run(args.host, args.port)
         return 0
 
-    p = argparse.ArgumentParser(prog="bili-notes", description="把 B 站视频整理成知识笔记")
-    p.add_argument("videos", nargs="*", help="BV 号、av 号、视频链接或 b23.tv 短链")
-    p.add_argument("--watchlater", action="store_true", help="处理「稍后再看」里的全部视频（需要 Cookie）")
-    p.add_argument("-o", "--out-dir", type=Path)
-    p.add_argument("--model", help=f"Claude 模型，默认 {DEFAULT_MODEL}")
-    p.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"])
-    p.add_argument("--whisper-model", help="无字幕时使用的 Whisper 模型，如 small / medium / large-v3-turbo")
-    p.add_argument("--prompt-file", type=Path, help="自定义整理要求（替换默认系统提示词）")
-    p.add_argument("--force", action="store_true", help="忽略缓存，重新获取逐字稿")
-    a = p.parse_args(argv)
+    settings = Settings.from_env()
 
-    cfg = config_from_env(
-        out_dir=a.out_dir, model=a.model, effort=a.effort,
-        whisper_model=a.whisper_model, prompt_file=a.prompt_file, force=a.force or None,
-    )
-    bili = BiliClient(cfg.cookie)
-    try:
-        videos = list(a.videos)
-        if a.watchlater:
-            videos += bili.watch_later()
-        if not videos:
-            p.error("请提供至少一个视频，或使用 --watchlater")
+    if args.cmd == "folders":
+        from .bilibili import BiliClient
 
-        failed = 0
-        for i, v in enumerate(videos, 1):
-            print(f"\n[{i}/{len(videos)}] {v}")
+        bili = BiliClient(settings.bili_cookie)
+        try:
+            for f in bili.my_folders():
+                print(f"{f['id']:>12}  {f['title']}（{f['media_count']} 个）")
+        finally:
+            bili.close()
+        return 0
+
+    from .service import Service
+
+    service = Service(settings, LLMConfig.from_env())
+    service.log = print  # 命令行下直接打印
+
+    if args.cmd == "search":
+        for hit in service.store.search(" ".join(args.query)):
+            print(f"\n#{hit.video.id} {hit.video.display_title}（{hit.video.owner}）")
+            for ts, text in hit.snippets:
+                print(f"   [{ts or '笔记'}] {text}")
+        return 0
+
+    if args.cmd == "add":
+        from .web import resolve_bvid
+
+        for text in args.videos:
             try:
-                process(v, cfg, bili)
-            except Exception as e:  # 批量处理时单个失败不影响其余
-                failed += 1
-                print(f"❌ 失败：{e}", file=sys.stderr)
-        return 1 if failed else 0
-    finally:
-        bili.close()
+                bvid, page = resolve_bvid(text, settings.bili_cookie)
+            except Exception as e:
+                print(f"❌ {text}：{e}", file=sys.stderr)
+                continue
+            vid, new = service.store.add(bvid, page, source="manual")
+            if not new and (v := service.store.get(vid)) and v.status in ("done", "failed"):
+                service.store.requeue(vid)  # 命令行里明确要求整理，已有的就重新生成
+    elif args.cmd == "sync":
+        service.sync_once()
+
+    failed_before = service.store.counts().get("failed", 0)
+    while service.process_next():
+        pass
+    return 1 if service.store.counts().get("failed", 0) > failed_before else 0
 
 
 if __name__ == "__main__":

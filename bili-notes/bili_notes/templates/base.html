@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{% block title %}B站笔记{% endblock %}</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#fb7299">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="B站笔记">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
+<link rel="icon" href="/static/icon-192.png">
+<link rel="stylesheet" href="/static/style.css?v=2">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="/">B站笔记</a>
+  <form class="top-search" action="/search"><input name="q" type="search" placeholder="搜索知识库" value="{{ q or '' }}" enterkeyhint="search"></form>
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+<script>
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+</script>
+</body>
+</html>

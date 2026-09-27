@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}搜索：{{ q }} · B站笔记{% endblock %}
+{% block content %}
+{% if q %}<p class="muted">「{{ q }}」共 {{ results|length }} 个视频</p>{% endif %}
+<ul class="list">
+{% for v, snippets in results %}
+  <li>
+    <a href="/v/{{ v.id }}"><span class="title">{{ v.display_title }}</span><span class="meta">{{ v.owner }}</span></a>
+    {% for ts, url, text in snippets %}
+      <p class="snippet">{% if ts %}<a href="{{ url }}">{{ ts }}</a>{% else %}<span class="tag">笔记</span>{% endif %} {{ text }}</p>
+    {% endfor %}
+  </li>
+{% else %}
+  {% if q %}<li class="empty">没有找到。多个关键词用空格分开，会同时匹配。</li>{% endif %}
+{% endfor %}
+</ul>
+{% endblock %}

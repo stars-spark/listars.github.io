@@ -1,17 +1,13 @@
-"""把逐字稿交给 Claude，整理成结构化的知识笔记。"""
+"""笔记的提示词，以及把逐字稿交给大模型整理成笔记。"""
 
 from __future__ import annotations
 
-import anthropic
-
 from .bilibili import VideoInfo
-
-DEFAULT_MODEL = "claude-opus-5"
-# 这些模型支持服务端 fallbacks="default"：被安全分类器误拒时自动换模型重试
-FALLBACK_MODELS = {"claude-opus-5", "claude-opus-5-5", "claude-fable-5-1"}
+from .config import LLMConfig
+from .llm import generate
 
 SYSTEM_PROMPT = """\
-你是一名严谨的社会学与历史学研究助理。用户付费观看了一个 B 站讲解视频，但没有时间看完，\
+你是一名严谨的社会学与历史学研究助理。用户想了解一个 B 站讲解视频的内容，但没有时间看完，\
 需要你把视频逐字稿整理成一份可以替代观看的学习笔记，让用户读完就能掌握视频里的知识。
 
 关于输入：
@@ -33,9 +29,9 @@ UP 主的主要结论，每条后面标注出处时间，例如 [12:34]。
 （历史类视频尤其重要）按时间排序，写清楚年代。
 ## 证据与来源
 视频引用的史料、数据、学者、著作，标注时间。
-## 需要存疑的地方
-视频中有争议、简化过度、与学界主流观点不一致或缺少证据的说法，简要说明理由。\
-这一节是你的独立判断，要和 UP 主的观点清楚区分。
+## 可以对照的其他观点
+视频中简化较多、学界有不同看法或值得进一步核实的说法，简要说明其他观点和依据。\
+这一节是你补充的背景，要和 UP 主的观点清楚区分。
 ## 延伸阅读
 先列视频里提到的书和文章；再列你推荐的，并注明「（AI 推荐）」。
 ## 自测问题
@@ -67,32 +63,12 @@ def build_user_message(info: VideoInfo, transcript: str) -> str:
 def summarize(
     info: VideoInfo,
     transcript: str,
-    model: str = DEFAULT_MODEL,
-    effort: str = "high",
+    llm: LLMConfig,
     system_prompt: str = SYSTEM_PROMPT,
-    client: anthropic.Anthropic | None = None,
+    http=None,
 ) -> str:
-    client = client or anthropic.Anthropic()
-    kwargs: dict = {}
-    if model in FALLBACK_MODELS:
-        kwargs = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
-
-    # 逐字稿可能很长、笔记也不短，用流式请求避免 HTTP 超时
-    with client.beta.messages.stream(
-        model=model,
-        max_tokens=64000,
-        thinking={"type": "adaptive"},
-        output_config={"effort": effort},
-        system=system_prompt,
-        messages=[{"role": "user", "content": build_user_message(info, transcript)}],
-        **kwargs,
-    ) as stream:
-        message = stream.get_final_message()
-
-    if message.stop_reason == "refusal":
-        detail = getattr(message.stop_details, "explanation", None) if message.stop_details else None
-        raise RuntimeError(f"模型拒绝了这次请求：{detail or '未说明原因'}")
-    text = "".join(block.text for block in message.content if block.type == "text").strip()
-    if message.stop_reason == "max_tokens":
+    result = generate(llm, system_prompt, build_user_message(info, transcript), http=http)
+    text = result.text
+    if result.truncated:
         text += "\n\n> ⚠️ 笔记达到长度上限被截断。"
     return text
