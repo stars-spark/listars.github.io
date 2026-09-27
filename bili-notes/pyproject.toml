@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bili-notes"
+version = "0.1.0"
+description = "把 B 站讲解视频整理成可以替代观看的知识笔记"
+requires-python = ">=3.10"
+dependencies = ["httpx>=0.27", "anthropic>=1.8"]
+
+[project.optional-dependencies]
+asr = ["faster-whisper>=1.1"]
+web = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9"]
+all = ["bili-notes[asr,web]"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+bili-notes = "bili_notes.cli:main"
+
+[tool.setuptools]
+packages = ["bili_notes"]
